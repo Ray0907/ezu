@@ -13,10 +13,10 @@
 - **Safe on untrusted files.** See [Security](#security).
 
 <p align="center">
-  <img src="assets/diagrams.png" alt="The lower half of the same document in ezu: a table, a highlighted code block, a footnote and a Mermaid flowchart drawn inline" width="760">
+  <img src="assets/diagrams.png" alt="Nine Mermaid diagram types drawn by ezu in Ghostty: flowchart, sequence, class, state, er, gantt, pie, gitgraph and mindmap" width="760">
 </p>
 
-<sub>Both images are real screenshots of ezu running <code>ezu demo/demo.md</code> in Ghostty. The second shows the lower half of the same output. The content is invented.</sub>
+<sub>Both images are real screenshots of ezu running in Ghostty. The first is <code>ezu demo/demo.md</code>. In the second, each diagram type was captured in its own window and the nine captures were arranged into one image. The content is invented.</sub>
 
 ## Install
 

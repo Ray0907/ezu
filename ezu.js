@@ -16,6 +16,11 @@ import { pathToFileURL } from 'node:url';
 
 const DARK = { bg: '#1e1e2e', fg: '#e6e6ef', muted: '#9a9ab0', line: '#b4b4c8', surface: '#2b2b3d',
   'surface-alt': '#363650', border: '#5a5a78', accent: '#7aa2f7' };
+// Chart series colors: OKLCH hue steps at one lightness and chroma, so no slice outshouts another.
+// Dark L=0.74 C=0.11 (6.7:1 or more on bg), light L=0.55 C=0.13.
+const series = list => Object.fromEntries(list.map((c, i) => [`series-${i + 1}`, c]));
+const DARK_SERIES = series(['#85abf0', '#de9a60', '#76be86', '#e88f87', '#c097df', '#3ebfc6', '#c0aa54', '#df8db5']);
+const LIGHT_SERIES = series(['#466fbd', '#aa5910', '#298646', '#b14e49', '#8959aa', '#00878f', '#8a6f00', '#a84e7c']);
 const LIGHT = { bg: '#ffffff', fg: '#1f1f1f', muted: '#6e6e6e', line: '#1f1f1f', surface: '#f3f3f3',
   'surface-alt': '#e6e6e6', border: '#8a8a8a', accent: '#5b7bd5' };
 
@@ -82,7 +87,7 @@ export function fontOptions(svg, dirs = FONT_DIRS) {
 }
 
 export function toPng(text, { light = false } = {}) {
-  const theme = light ? LIGHT : DARK;
+  const theme = light ? { ...LIGHT, ...LIGHT_SERIES } : { ...DARK, ...DARK_SERIES };
   const { svg } = render(text);
   const flat = flatten(selfContained(svg), theme);
   if (/var\(/.test(flat)) throw new Error('unresolved var() in svg');
