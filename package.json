@@ -1,0 +1,29 @@
+{
+  "name": "ezu",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "bin": {
+    "ezu": "./ezu.js"
+  },
+  "dependencies": {
+    "@resvg/resvg-js": "^2.6.2",
+    "@xmldom/xmldom": "^0.9.12",
+    "chalk": "^5.4.1",
+    "marked": "^15.0.12",
+    "marked-footnote": "^1.4.0",
+    "marked-terminal": "^7.3.0",
+    "pele": "^1.10.0",
+    "wrap-ansi": "^7.0.0"
+  },
+  "devDependencies": {
+    "string-width": "^4.2.3"
+  }
+}
