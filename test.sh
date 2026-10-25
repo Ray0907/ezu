@@ -45,6 +45,8 @@ max=$(grep word out/typo.txt | awk '{ if (length($0)>m) m=length($0) } END { pri
   && ! sed 's/\x1b\[[0-9;]*m//g' out/typo.txt | grep -v '^$' | grep -qv '^  ' \
   && echo "ok   typography" || { echo "FAIL typography (max=$max)"; fail=1; }
 # CJK: wide chars wrap by display width (<=72 cells incl. margin) and tables stay aligned
+{ printf '# 標題\n\n'; for i in $(seq 30); do printf '這是一段很長的中文句子%s，' $i; done
+  printf '\n\n| 名稱 | 數量 |\n|------|-----|\n| 蘋果 | 1 |\n| 香蕉和橘子 | 22 |\n'; } > out/cjk.md
 ./ezu.js out/cjk.md > out/cjk.txt
 node --input-type=module -e "
 import sw from 'string-width'; import fs from 'node:fs';
