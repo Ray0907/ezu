@@ -1,6 +1,8 @@
 #!/bin/sh
 # E2E: every diagram type renders to a valid, non-blank PNG; bad input fails nonzero.
 set -e; cd "$(dirname "$0")"; mkdir -p out; fail=0
+# piped output is plain text by default; the suites below check the rich output, so force it
+export EZU_GRAPHICS=on
 run() { # name, mermaid text
   printf '%s\n' "$2" | ./ezu.js --png "out/$1.png"
   node -e "const b=require('fs').readFileSync('out/$1.png');if(b.slice(1,4).toString()!=='PNG'||b.length<1500)process.exit(1)" \
@@ -112,5 +114,105 @@ if command -v bun >/dev/null 2>&1; then
     && grep -aq $'\033_Ga=T' "$tmp/run/d.txt" && echo "ok   single binary" || { echo "FAIL single binary"; fail=1; }
   rm -rf "$tmp"
 else echo "skip single binary (no bun)"; fi
+# --- capability probe, non-TTY output, --width, theme, usage ---
+# resolveCaps is the single decision point: probe reply + env + tty in, capabilities out
+node --input-type=module -e "
+import {resolveCaps} from './ezu.js';
+const E = '\x1b', DA = E + '[?62;4c', OK = E + '_Gi=31;OK' + E + '\\\\';
+const R = (reply, env = {}, tty = true) => resolveCaps({reply, env, tty});
+const g = (...a) => R(...a).graphics;
+const bg = (c, reply) => R(reply).light === c;
+const checks = [
+  g(E + '[6;36;18t' + OK + DA) === true,
+  R(E + '[6;36;18t' + OK + DA).cellW === 18,
+  R(E + '[6;40;22t' + DA).cellW === 22,
+  g(DA, {KITTY_WINDOW_ID: '1'}) === false,
+  g(DA + OK) === false,
+  g(null, {TERM_PROGRAM: 'ghostty'}) === true,
+  g(null, {TERM_PROGRAM: 'WezTerm'}) === true,
+  g(null, {TERM: 'xterm-kitty'}) === true,
+  g(null, {TERM: 'xterm-ghostty'}) === true,
+  g(null, {KITTY_WINDOW_ID: '3'}) === true,
+  g(null, {TERM: 'xterm-256color', TERM_PROGRAM: 'Apple_Terminal'}) === false,
+  g(OK + DA, {EZU_GRAPHICS: 'off'}) === false,
+  g(DA, {EZU_GRAPHICS: 'on'}) === true,
+  g(null, {EZU_GRAPHICS: 'on'}, false) === true,
+  g(OK + DA, {}, false) === false,
+  bg(true, E + ']11;rgb:ffff/ffff/ffff\x07' + DA),
+  bg(true, E + ']11;rgb:ff/ff/ff' + E + '\\\\' + DA),
+  bg(false, E + ']11;rgb:1e1e/1e1e/2e2e\x07' + DA),
+  bg(false, E + ']11;rgb:0000/0000/0000\x07'),
+  bg(false, DA),
+  bg(false, null),
+];
+const bad = checks.map((c, i) => c ? null : i).filter(i => i !== null);
+if (bad.length) { console.log('failed checks', bad); process.exit(1); }" \
+  && echo "ok   capability resolution" || { echo "FAIL capability resolution"; fail=1; }
+# real round trip through a pty: the probe reply decides, env hints only when the terminal is silent
+if command -v python3 >/dev/null 2>&1; then
+cat > out/ptyrun.py <<'PY'
+import os, pty, sys
+reply, cmd = os.fsencode(sys.argv[1]), sys.argv[2:]
+pid, fd = pty.fork()
+if pid == 0: os.execvp(cmd[0], cmd)
+out, sent = b'', False
+while True:
+    try: d = os.read(fd, 65536)
+    except OSError: break
+    if not d: break
+    out += d
+    if not sent and b'\x1b[c' in out:
+        sent = True
+        if reply: os.write(fd, reply)
+_, st = os.waitpid(pid, 0)
+sys.stdout.buffer.write(out); sys.exit(os.waitstatus_to_exitcode(st))
+PY
+printf '# T\n\n```mermaid\nflowchart LR\n  A-->B\n```\n' > out/pty.md
+pty() { # reply, extra env assignments...: run ezu on out/pty.md in a pty with a clean env
+  r=$1; shift
+  env -u EZU_GRAPHICS -u KITTY_WINDOW_ID TERM_PROGRAM=x TERM=xterm "$@" python3 out/ptyrun.py "$r" ./ezu.js out/pty.md
+}
+pty $'\033[6;36;18t\033_Gi=31;OK\033\\\033[?62;4c' > out/pty-ok.txt
+pty $'\033[?62c' KITTY_WINDOW_ID=1 > out/pty-da.txt
+pty '' TERM_PROGRAM=ghostty > out/pty-hint.txt
+pty '' > out/pty-none.txt
+{ grep -aq $'\033_Ga=T' out/pty-ok.txt && ! grep -aq $'\033_Ga=T' out/pty-da.txt && grep -aq 'A-->B' out/pty-da.txt \
+  && grep -aq $'\033_Ga=T' out/pty-hint.txt && ! grep -aq $'\033_Ga=T' out/pty-none.txt && grep -aq 'A-->B' out/pty-none.txt; } \
+  && echo "ok   probe round trip (pty)" || { echo "FAIL probe round trip (pty)"; fail=1; }
+# no file and a terminal on stdin: usage on stderr, exit 1, no hang
+rc=0; env -u EZU_GRAPHICS timeout 10 python3 out/ptyrun.py '' ./ezu.js > out/usage.txt || rc=$?
+[ $rc = 1 ] && grep -aq '^usage: ezu' out/usage.txt && echo "ok   usage without input" || { echo "FAIL usage without input (rc=$rc)"; fail=1; }
+else echo "skip pty tests (no python3)"; fi
+# piped markdown is plain: no APC graphics, no OSC 8, alt text, note plus source, text (url) links
+printf '# T\n\n![alt text here](flowchart.png)\n\n[site](https://example.com/p)\n\n```mermaid\nflowchart LR\n  A-->B\n```\n' > out/plain.md
+env -u EZU_GRAPHICS ./ezu.js out/plain.md > out/plain.txt
+sed 's/\x1b\[[0-9;]*m//g' out/plain.txt > out/plain.clean.txt
+{ ! grep -aq $'\033_G' out/plain.txt && ! grep -aq $'\033]8' out/plain.txt \
+  && grep -q 'alt text here' out/plain.clean.txt && grep -q 'site (https://example.com/p)' out/plain.clean.txt \
+  && grep -q 'mermaid' out/plain.clean.txt && grep -q 'A-->B' out/plain.clean.txt; } \
+  && echo "ok   piped markdown is plain" || { echo "FAIL piped markdown is plain"; fail=1; }
+# EZU_GRAPHICS=off drops graphics (note plus source); EZU_GRAPHICS=on forces them on a pipe (out/md.txt)
+EZU_GRAPHICS=off ./ezu.js out/doc.md > out/goff.txt
+{ ! grep -aq $'\033_G' out/goff.txt && grep -aq 'flowchart LR' out/goff.txt && grep -aq 'mermaid' out/goff.txt \
+  && grep -aq $'\033_Ga=T' out/md.txt; } \
+  && echo "ok   graphics off and forced on" || { echo "FAIL graphics off and forced on"; fail=1; }
+# --width / -w: content width; 0 is the full terminal width (80 piped) minus the margins; bad values fail
+width_max() { grep word out/typo.txt | sed 's/\x1b\[[0-9;]*m//g' | awk '{ if (length($0)>m) m=length($0) } END { print m }'; }
+./ezu.js --width 40 out/typo.md > out/typo.txt; w40=$(width_max)
+./ezu.js -w 40 out/typo.md > out/typo.txt; w40s=$(width_max)
+./ezu.js --width 0 out/typo.md > out/typo.txt; w0=$(width_max)
+./ezu.js out/typo.md > out/typo.txt; wdef=$(width_max)
+werr=0
+for bad in abc -3 2.5 ''; do
+  if ./ezu.js --width "$bad" out/typo.md 2>out/werr.txt >/dev/null; then werr=1; fi
+  grep -q '^ezu: invalid width$' out/werr.txt || werr=1
+done
+[ "$w40" -le 42 ] && [ "$w40" -ge 30 ] && [ "$w40s" = "$w40" ] && [ "$w0" -gt 72 ] && [ "$w0" -le 78 ] && [ "$wdef" -le 72 ] && [ $werr = 0 ] \
+  && echo "ok   width flag" || { echo "FAIL width flag (40=$w40 -w=$w40s 0=$w0 default=$wdef err=$werr)"; fail=1; }
+# theme: --dark is the explicit default; --light differs; piped output never probes
+printf 'flowchart LR\n  A-->B\n' > out/theme.mmd
+./ezu.js --png out/t-dark.png --dark out/theme.mmd; ./ezu.js --png out/t-light.png --light out/theme.mmd; ./ezu.js --png out/t-def.png out/theme.mmd
+{ cmp -s out/t-dark.png out/t-def.png && ! cmp -s out/t-dark.png out/t-light.png; } \
+  && echo "ok   dark and light flags" || { echo "FAIL dark and light flags"; fail=1; }
 ./test-syntax.sh || fail=1
 [ $fail = 0 ] && echo ALL GREEN || { echo RED; exit 1; }

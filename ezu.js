@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Render Mermaid and Markdown to the terminal (Ghostty / kitty graphics protocol).
-// usage: ezu [file] [--light] [--md] [--png out.png]   (stdin if no file; .md files are markdown)
+// usage: ezu [file] [--light | --dark] [--md] [--width N | -w N] [--png out.png]
+//   stdin if no file; .md files are markdown; theme follows the terminal background unless forced
+//   env EZU_GRAPHICS=on|off overrides graphics detection (on also keeps links and images when piped)
 import { render } from 'pele';
 import { Resvg } from '@resvg/resvg-js';
 import fs from 'node:fs';
@@ -152,17 +154,54 @@ export function indent(text, pad) {
 // columns to occupy: natural size (px / cell width), never wider than the terminal
 export const fit = (px, termCols, cellW) => Math.min(termCols, Math.max(1, Math.ceil(px / cellW)));
 
-// ask the terminal for its cell size in pixels (CSI 16 t); null if it doesn't answer
-function cellWidth() {
+// One raw-mode round trip: cell size (CSI 16 t), background colour (OSC 11), a kitty graphics query,
+// then device attributes (CSI c). Terminals answer in order, so the attributes reply ends the wait and
+// a graphics reply counts only when it came first.
+const PROBE = '\x1b[16t\x1b]11;?\x07\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b[c';
+const DA = /\x1b\[\?[\d;]*c/;
+
+function probe() {
   if (!process.stdin.isTTY || !process.stdout.isTTY) return Promise.resolve(null);
   return new Promise(done => {
     let buf = '';
     const finish = v => { clearTimeout(t); process.stdin.off('data', on); process.stdin.setRawMode(false); process.stdin.pause(); done(v); };
-    const on = d => { buf += d; const m = buf.match(/\x1b\[6;\d+;(\d+)t/); if (m) finish(+m[1]); };
-    const t = setTimeout(() => finish(null), 150);
+    const on = d => { buf += d; if (DA.test(buf)) finish(buf); };
+    const t = setTimeout(() => finish(buf || null), 150);
     process.stdin.setRawMode(true); process.stdin.resume(); process.stdin.on('data', on);
-    process.stdout.write('\x1b[16t');
+    process.stdout.write(PROBE);
   });
+}
+
+// kitty graphics support from the probe reply: true / false, or null when the terminal said nothing
+function replyGraphics(reply) {
+  const da = reply.search(DA), ok = reply.indexOf('_Gi=31;OK');
+  if (ok >= 0 && (da < 0 || ok < da)) return true;
+  return da >= 0 ? false : null;
+}
+
+const envGraphics = env => !!env.KITTY_WINDOW_ID || /^(ghostty|kitty|wezterm)$/i.test(env.TERM_PROGRAM ?? '')
+  || /kitty|ghostty/i.test(env.TERM ?? '');
+
+// relative luminance of an OSC 11 reply (rgb:RRRR/GGGG/BBBB, 1-4 hex digits per channel), or null
+function bgLuminance(reply) {
+  const m = /\x1b\]11;rgb:([\da-f]{1,4})\/([\da-f]{1,4})\/([\da-f]{1,4})/i.exec(reply);
+  if (!m) return null;
+  const [r, g, b] = m.slice(1).map(h => parseInt(h, 16) / (16 ** h.length - 1));
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+// Single decision point: probe reply (or null), environment and whether stdout is a terminal in,
+// capabilities out. EZU_GRAPHICS wins; a pipe gets no graphics; a silent terminal falls back to env hints.
+export function resolveCaps({ reply = null, env = {}, tty = false }) {
+  const r = reply ?? '';
+  const cell = /\x1b\[6;\d+;(\d+)t/.exec(r);
+  const forced = env.EZU_GRAPHICS === 'on' ? true : env.EZU_GRAPHICS === 'off' ? false : null;
+  const lum = bgLuminance(r);
+  return {
+    cellW: cell ? +cell[1] : 18, // 18px ~ retina cell, for terminals without CSI 16 t
+    light: lum !== null && lum > 0.5,
+    graphics: forced ?? (tty ? replyGraphics(r) ?? envGraphics(env) : false),
+  };
 }
 
 // kitty graphics: PNG payload in <=4096-byte base64 chunks; cols sets display width (rows keep aspect)
@@ -205,7 +244,9 @@ function loadImage(href, baseDir) {
   } catch { return null; } finally { if (fd !== undefined) fs.closeSync(fd); }
 }
 
-export function renderMarkdown(src, { W, PAD, cols, cellW, baseDir, light }) {
+const mermaidNote = chalk.dim('mermaid diagram (terminal graphics unavailable), source:');
+
+export function renderMarkdown(src, { W, PAD, cols, cellW, baseDir, light, graphics, links }) {
   URLS.length = IMAGES.length = 0;
   const img = png => { IMAGES.push(kitty(png, fit(png.readUInt32BE(16), cols - 2 * PAD.length, cellW)).slice(0, -1)); return `\n\x1b[953;${IMAGES.length - 1}m\n\n`; };
 
@@ -227,18 +268,20 @@ export function renderMarkdown(src, { W, PAD, cols, cellW, baseDir, light }) {
   r.link = function (t) { // untrusted hrefs: http(s)/mailto only, URL-normalized
     const out = orig.link.call(this, t);
     let u; try { u = new URL(t.href); } catch { return out; }
+    if (!links) return out;
     if (!['http:', 'https:', 'mailto:'].includes(u.protocol) || URLS.length > 999) return out;
     URLS.push(u.href);
     return `\x1b[951;${URLS.length - 1}m${out}\x1b[952m`;
   };
   r.code = function (t) { // ```mermaid in any fence form, nested anywhere; a broken diagram stays local
     if (!/^mermaid(\s|$)/.test(t.lang ?? '')) return orig.code.call(this, t);
+    if (!graphics) return mermaidNote + '\n' + orig.code.call(this, { ...t, lang: '' });
     try { return img(toPng(t.text, { light })); } catch (e) {
       return chalk.dim('mermaid error: ' + strip(String(e.message).split('\n')[0])) + '\n' + orig.code.call(this, { ...t, lang: '' });
     }
   };
   r.image = function (t) {
-    const png = IMAGES.length > 999 ? null : loadImage(t.href, baseDir);
+    const png = !graphics || IMAGES.length > 999 ? null : loadImage(t.href, baseDir);
     return png ? img(png) : orig.image.call(this, t);
   };
   r.text = function (t) { // a tight list item is a text token that carries its inline tokens; marked-terminal prints t.text raw
@@ -285,26 +328,44 @@ export function renderMarkdown(src, { W, PAD, cols, cellW, baseDir, light }) {
 const isMain = import.meta.main ?? (() => {
   try { return import.meta.url === pathToFileURL(fs.realpathSync(process.argv[1])).href; } catch { return false; }
 })();
-if (isMain) {
-  const cellW = (await cellWidth()) ?? 18; // ponytail: 18px ≈ retina cell; query fails on terminals without CSI 16 t
-  const cols = process.stdout.columns || 80;
+const USAGE = 'usage: ezu [file] [--light | --dark] [--md] [--width N | -w N] [--png out.png]';
+
+function parseArgs(argv) {
+  const a = [...argv];
+  const take = names => { const i = a.findIndex(x => names.includes(x)); return i < 0 ? undefined : a.splice(i, 2)[1] ?? ''; };
+  const pngOut = take(['--png']) ?? null;
+  const width = take(['--width', '-w']);
+  if (width !== undefined && !/^\d+$/.test(width)) throw new Error('invalid width');
+  return {
+    pngOut, md: a.includes('--md'), file: a.find(x => !x.startsWith('--')),
+    width: width === undefined ? null : +width,
+    light: a.includes('--light') ? true : a.includes('--dark') ? false : null, // null: ask the terminal
+  };
+}
+
+async function main() {
   const PAD = '  '; // left margin so nothing touches the window edge
-  const W = Math.min(cols - 2 * PAD.length, 70); // content width
-  const a = process.argv.slice(2);
-  const pi = a.indexOf('--png');
-  const pngOut = pi >= 0 ? a.splice(pi, 2)[1] : null;
-  const light = a.includes('--light');
-  const file = a.find(x => !x.startsWith('--'));
-  try {
-    const src = fs.readFileSync(file ?? 0, 'utf8');
-    if ((a.includes('--md') || /\.(md|markdown)$/i.test(file ?? '')) && !pngOut) {
-      process.stdout.write(renderMarkdown(src, { W, PAD, cols, cellW, light,
-        baseDir: file ? path.dirname(path.resolve(file)) : process.cwd() })); // no process.exit: let a pipe drain
-    } else {
-      const png = toPng(src, { light });
-      if (pngOut) fs.writeFileSync(pngOut, png);
-      else if (process.stdout.isTTY) process.stdout.write(PAD + kitty(png, fit(png.readUInt32BE(16), cols - 2 * PAD.length, cellW)));
-      else process.stdout.write(png);
-    }
-  } catch (e) { console.error('ezu:', strip(String(e.message))); process.exit(1); }
+  const tty = !!process.stdout.isTTY, cols = process.stdout.columns || 80;
+  const args = parseArgs(process.argv.slice(2));
+  if (!args.file && process.stdin.isTTY) { console.error(USAGE); process.exit(1); }
+  const caps = resolveCaps({ reply: args.pngOut ? null : await probe(), env: process.env, tty });
+  const light = args.light ?? caps.light;
+  const room = cols - 2 * PAD.length;
+  const W = args.width === null ? Math.min(room, 70) : args.width || room; // content width
+  const src = fs.readFileSync(args.file ?? 0, 'utf8');
+  if ((args.md || /\.(md|markdown)$/i.test(args.file ?? '')) && !args.pngOut) {
+    process.stdout.write(renderMarkdown(src, { W, PAD, cols, cellW: caps.cellW, light, graphics: caps.graphics,
+      links: tty || process.env.EZU_GRAPHICS === 'on', // no process.exit: let a pipe drain
+      baseDir: args.file ? path.dirname(path.resolve(args.file)) : process.cwd() }));
+    return;
+  }
+  if (tty && !caps.graphics && !args.pngOut) { process.stdout.write(`${PAD}${mermaidNote}\n${src.trimEnd()}\n`); return; }
+  const png = toPng(src, { light });
+  if (args.pngOut) fs.writeFileSync(args.pngOut, png);
+  else if (tty) process.stdout.write(PAD + kitty(png, fit(png.readUInt32BE(16), room, caps.cellW)));
+  else process.stdout.write(png);
+}
+
+if (isMain) {
+  try { await main(); } catch (e) { console.error('ezu:', strip(String(e.message))); process.exit(1); }
 }

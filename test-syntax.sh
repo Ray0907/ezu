@@ -49,6 +49,7 @@ flowchart LR
 const notDiagram = 1;
 ```
 MD
+export EZU_GRAPHICS=${EZU_GRAPHICS:-on} # piped output is plain unless forced; these cases check the rich output
 ./ezu.js out/s/fences.md > out/s/fences.txt
 [ "$(imgs out/s/fences.txt)" = 5 ] && grep -q notDiagram out/s/fences.txt && ok "mermaid fence forms" || bad "mermaid fence forms ($(imgs out/s/fences.txt) images)"
 
