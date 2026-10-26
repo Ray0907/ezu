@@ -22,6 +22,11 @@ export default {
   radar: 'radar-beta\n  axis a["A"], b["B"], c["C"]\n  curve x["X"]{1, 2, 3}\n  max 5',
   treemap: 'treemap-beta\n"Root"\n  "A": 10\n  "B": 20',
   journey: 'journey\n  title Day\n  section Work\n    Code: 5: Me\n    Meet: 2: Me, Bob',
+  c4container: 'C4Container\n  Person(u, "User")\n  Container(w, "Web", "JS", "UI")\n  Rel(u, w, "Uses")',
+  venn: 'venn-beta\n  set A\n  set B\n  union A,B',
+  wardley: 'wardley-beta\n  title Map\n  anchor User [0.9, 0.5]\n  component Cup [0.6, 0.4]\n  User -> Cup',
+  treeview: 'treeView-beta\n  "root"\n    "a"\n    "b"',
+  ishikawa: 'ishikawa-beta\n  Blurry Photo\n    Process\n      Out of focus\n    User\n      Shaky hands\n    Equipment\n      Dirty lens',
 };
 
 // Syntax variants that must keep rendering (directives, styling, labels, shapes).
